@@ -2,7 +2,7 @@
 name          = "reactivity"
 version       = "0.1.0"
 edition       = "2021"
-license       = "MIT or Apache-2.0"
+license       = "MIT OR Apache-2.0"
 authors       = ["Dexer Matters <dexermatters@gmail.com>" ]
 description   = "A lightweight library for reactive programming with signals in Rust."
 homepage      = "https://github.com/dexermatters/reactivity"

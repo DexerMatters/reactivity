@@ -2,8 +2,16 @@ use std::sync::Arc;
 
 use api::SignalBase;
 
-mod api;
+pub mod api;
 
+/// A reactive signal that can be observed and updated.
+/// It is thread-safe and can be used in concurrent environments.
+///
+/// It can:
+/// - Hold a value that can be read with `get()` or `borrow()`
+/// - Be updated with new values via `send()`
+/// - Depend on other signals and react to their changes
+/// - Have other signals depend on it
 pub type Signal<T> = SignalBase<T, Arc<parking_lot::RwLock<T>>>;
 
 #[macro_export]
@@ -66,7 +74,7 @@ macro_rules! __signal_aux {
 #[macro_export]
 macro_rules! signal {
     ($(<$_before:ident $(, $_after:ident)?>)? [$($params:ident),*] $proc:expr) => {
-        signal!(<$_before> [$($params),*] $proc; ())
+        signal!($(<$_before:ident $(, $_after:ident)?>)? [$($params),*] $proc; ())
     };
     ($(<$_before:ident $(, $_after:ident)?>)? [$($params:ident),*] $proc:expr ; $eff:expr) => {
         {
@@ -119,12 +127,24 @@ mod tests {
 
     #[test]
     fn test() {
-        let x = signal!(1);
-        let y = signal!(<_y, y> [x] x + 2; println!("y {_y} -> {y}"));
-        let z = signal!(<_z, z> [y] y * y; println!("z {_z} -> {z}"));
-        x.send(2);
-        assert_eq!(x.get(), 2);
-        assert_eq!(y.get(), 4);
-        assert_eq!(z.get(), 16);
+        let count = signal!(0);
+        let doubled = signal!([count] count * 2);
+
+        // Suspend reactions
+        count.suspend();
+
+        // Make changes without triggering reactions
+        count.send(5);
+        count.send(10);
+
+        assert_eq!(doubled.get(), 0); // No reaction
+
+        // Lift suspension
+        count.resume();
+
+        // Now reactions will be triggered
+        count.send(20);
+
+        assert_eq!(doubled.get(), 40); // Reaction triggered
     }
 }

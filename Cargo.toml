@@ -1,10 +1,17 @@
 [package]
-name = "reactivity"
-version = "0.1.0"
-edition = "2021"
+name          = "reactivity"
+version       = "0.1.0"
+edition       = "2021"
+license       = "MIT or Apache-2.0"
+authors       = ["Dexer Matters <dexermatters@gmail.com>" ]
+description   = "A lightweight library for reactive programming with signals in Rust."
+homepage      = "https://github.com/dexermatters/reactivity"
+repository    = "https://github.com/dexermatters/reactivity"
+readme        = "README.md"
+keywords      = ["signal", "async", "reactive", "responsive"]
+categories    = ["asynchronous"]
 
 [dependencies]
-clone_dyn = "0.32.0"
-parking_lot = "0.12.3"
-paste = "1.0.15"
-take_mut = "0.2.2"
+clone_dyn     = "0.32.0"
+parking_lot   = "0.12.3"
+paste         = "1.0.15"

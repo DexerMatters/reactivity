@@ -115,11 +115,18 @@ impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
     }
 }
 
+pub(crate) trait Dirty {
+    fn dirty(&self) -> usize;
+    fn increase_dirty(&self);
+    fn decrease_dirty(&self);
+}
+
 /// Core trait for reactive components.
 ///
 /// Objects implementing this trait can react to changes and trigger reactions
 /// in dependent components.
-pub trait Reactive {
+#[allow(private_bounds)]
+pub trait Reactive: Dirty {
     /// Update the signal and trigger its reaction.
     fn react(&self);
 
@@ -127,6 +134,53 @@ pub trait Reactive {
     fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>
     where
         Self: 'static;
+
+    fn promise(&self) -> UpdatePromise
+    where
+        Self: 'static,
+    {
+        self.increase_dirty();
+        UpdatePromise::new(self.clone_box())
+    }
+}
+
+pub struct UpdatePromise {
+    signal: ReactiveRef,
+}
+
+impl UpdatePromise {
+    /// Creates a new `UpdatePromise` with the given signal.
+    pub fn new(signal: ReactiveRef) -> Self {
+        Self { signal }
+    }
+
+    pub fn from_signal<T, S>(signal: &SignalBase<T, S>) -> Self
+    where
+        T: Send + Sync + 'static,
+        S: Shared<T> + Send + Sync + Clone + 'static,
+        S::Ptr<Vec<ReactiveRef>>: Send + Sync,
+        S::Ptr<bool>: Send + Sync,
+        S::Ptr<usize>: Send + Sync,
+        S::Rc<Box<GeneratorFn<T, S>>>: Send + Sync,
+    {
+        Self {
+            signal: signal.clone_box(),
+        }
+    }
+
+    /// Resolves the promise by calling the `react()` method on the signal.
+    pub fn resolve(&self) {
+        self.signal.decrease_dirty();
+        if self.signal.dirty() == 0 {
+            self.signal.react();
+        }
+    }
+}
+
+impl Drop for UpdatePromise {
+    fn drop(&mut self) {
+        self.resolve();
+    }
 }
 
 /// A type alias for a reference to a `Reactive` object.
@@ -149,20 +203,18 @@ pub struct SignalBase<T, S: Shared<T>> {
     receivers: S::Ptr<Vec<ReactiveRef>>,
 
     suspended: S::Ptr<bool>,
+    dirty: S::Ptr<usize>,
 }
 
 impl<T, S: Shared<T>> SignalBase<T, S> {
     /// Creates a new independent signal with an initial value.
     pub fn new(value: T) -> Self {
-        let inner = S::new(value);
-        let generator = None;
-        let receivers = S::Ptr::<Vec<ReactiveRef>>::new(Vec::new());
-        let suspended = S::Ptr::<bool>::new(false);
         Self {
-            inner,
-            generator,
-            receivers,
-            suspended,
+            inner: S::new(value),
+            generator: None,
+            receivers: S::Ptr::<Vec<ReactiveRef>>::new(Vec::new()),
+            suspended: S::Ptr::<bool>::new(false),
+            dirty: S::Ptr::<usize>::new(0),
         }
     }
 
@@ -194,6 +246,7 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
             generator: None,
             receivers: S::Ptr::<Vec<ReactiveRef>>::new(Vec::new()),
             suspended: S::Ptr::<bool>::new(false),
+            dirty: S::Ptr::<usize>::new(0),
         };
         signal.generator = Some(S::Rc::init(Box::new(move |s| {
             let x = processor();
@@ -228,14 +281,16 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
     /// Updates the signal value and notifies all dependent signals.
     ///
     /// This triggers the `react()` method on all receivers (dependent signals).
-    pub fn send(&self, value: T) {
+    pub fn send(&self, value: T) -> Vec<UpdatePromise> {
         self.inner.replace(value);
         if self.suspended.borrow().clone() {
-            return;
+            return Vec::new();
         }
-        self.receivers.borrow().iter().for_each(|receiver| {
-            receiver.react();
-        });
+        self.receivers
+            .borrow()
+            .iter()
+            .map(|receiver| receiver.promise())
+            .collect()
     }
 
     /// Registers a dependent signal that will react when this signal changes.
@@ -266,21 +321,18 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
         T: Clone,
         ReactiveRef: Sized,
     {
-        let inner = S::new(self.inner.borrow().clone());
-        let generator = self.generator.clone();
-        let receivers = S::Ptr::<Vec<ReactiveRef>>::new(
-            self.receivers
-                .borrow()
-                .iter()
-                .map(|receiver| receiver.clone_box())
-                .collect(),
-        );
-        let suspended = S::Ptr::<bool>::new(self.suspended.borrow().clone());
         Self {
-            inner,
-            generator,
-            receivers,
-            suspended,
+            inner: S::new(self.inner.borrow().clone()),
+            generator: self.generator.clone(),
+            receivers: S::Ptr::<Vec<ReactiveRef>>::new(
+                self.receivers
+                    .borrow()
+                    .iter()
+                    .map(|receiver| receiver.clone_box())
+                    .collect(),
+            ),
+            suspended: S::Ptr::<bool>::new(self.suspended.borrow().clone()),
+            dirty: S::Ptr::<usize>::new(*self.dirty.borrow()),
         }
     }
 }
@@ -290,6 +342,7 @@ where
     S: Shared<T> + Send + Sync + Clone + 'static,
     S::Ptr<Vec<ReactiveRef>>: Send + Sync,
     S::Ptr<bool>: Send + Sync,
+    S::Ptr<usize>: Send + Sync,
     S::Rc<Box<GeneratorFn<T, S>>>: Send + Sync,
     T: Send + Sync + 'static,
 {
@@ -310,16 +363,31 @@ where
 
 impl<T, S: Shared<T>> Clone for SignalBase<T, S> {
     fn clone(&self) -> Self {
-        let inner = self.inner.clone();
-        let generator = self.generator.clone();
-        let receivers = self.receivers.clone();
-        let suspended = self.suspended.clone();
         Self {
-            inner,
-            generator,
-            receivers,
-            suspended,
+            inner: self.inner.clone(),
+            generator: self.generator.clone(),
+            receivers: self.receivers.clone(),
+            suspended: self.suspended.clone(),
+            dirty: self.dirty.clone(),
         }
+    }
+}
+
+impl<T, S> Dirty for SignalBase<T, S>
+where
+    S: Shared<T> + Send + Sync + Clone + 'static,
+    S::Ptr<usize>: Send + Sync,
+{
+    fn dirty(&self) -> usize {
+        *self.dirty.borrow()
+    }
+
+    fn increase_dirty(&self) {
+        self.dirty.replace(self.dirty() + 1);
+    }
+
+    fn decrease_dirty(&self) {
+        self.dirty.replace(self.dirty() - 1);
     }
 }
 

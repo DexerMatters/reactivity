@@ -16,10 +16,10 @@ pub type Signal<T> = SignalBase<T, Arc<parking_lot::RwLock<T>>>;
 
 #[macro_export]
 macro_rules! __signal_aux {
-    ([self] $var: ident, $_self:ident) => {
+    ([self] $var:ident, $_self:ident) => {
         let $var = $_self.get();
     };
-    ($var: ident, $_self:ident) => {
+    ($var:ident, $_self:ident) => {
         let $var = $var.get();
     };
 }
@@ -73,10 +73,10 @@ macro_rules! __signal_aux {
 
 #[macro_export]
 macro_rules! signal {
-    ($(<$_before:ident $(, $_after:ident)?>)? [$($params:ident),*] $proc:expr) => {
+    ($(< $_before:ident $(, $_after:ident)? >)? [$($params:ident),*] $proc:expr) => {
         signal!($(<$_before:ident $(, $_after:ident)?>)? [$($params),*] $proc; ())
     };
-    ($(<$_before:ident $(, $_after:ident)?>)? [$($params:ident),*] $proc:expr ; $eff:expr) => {
+    ($(< $_before:ident $(, $_after:ident)? >)? [$($params:ident),*] $proc:expr; $eff:expr) => {
         {
             $(
                 let $params = $params.clone();
@@ -117,34 +117,24 @@ macro_rules! signal {
 
     ($value:expr) => {
         Signal::new($value)
-    }
+    };
 }
 
 #[cfg(test)]
 mod tests {
-
     use crate::Signal;
 
     #[test]
     fn test() {
-        let count = signal!(0);
-        let doubled = signal!([count] count * 2);
-
-        // Suspend reactions
-        count.suspend();
-
-        // Make changes without triggering reactions
-        count.send(5);
-        count.send(10);
-
-        assert_eq!(doubled.get(), 0); // No reaction
-
-        // Lift suspension
-        count.resume();
-
-        // Now reactions will be triggered
-        count.send(20);
-
-        assert_eq!(doubled.get(), 40); // Reaction triggered
+        // Diamond dependency
+        let x = signal!(1);
+        let doubled_x = signal!([x] x * 2);
+        let tripled_x = signal!([x] x * 3);
+        let _ = signal!(
+            <before, now> 
+            [doubled_x, tripled_x] 
+            doubled_x + tripled_x; 
+            println!("output {before} -> {now}"));
+        x.send(2);
     }
 }

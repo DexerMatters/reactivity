@@ -5,8 +5,6 @@ use std::{
     sync::Arc,
 };
 
-use clone_dyn::clone_dyn;
-
 /// A trait for creating a new instance of a type with a given value.
 pub trait Constructor<T> {
     /// Creates a new instance of the type with the given value.
@@ -35,7 +33,7 @@ pub trait Shared<T>: Clone {
     /// The pointer type used for shared ownership.
     type Ptr<U>: Shared<U>;
 
-    /// The type of the clonable reference countable pointer.
+    /// The type of the sharable reference countable pointer.
     type Rc<U>: Constructor<U> + Deref + AsRef<U> + Clone;
 
     /// The type of the reference to the inner value.
@@ -121,10 +119,14 @@ impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
 ///
 /// Objects implementing this trait can react to changes and trigger reactions
 /// in dependent components.
-#[clone_dyn]
 pub trait Reactive {
     /// Update the signal and trigger its reaction.
     fn react(&self);
+
+    /// Clone this object as a trait object
+    fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>
+    where
+        Self: 'static;
 }
 
 /// A type alias for a reference to a `Reactive` object.
@@ -262,11 +264,17 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
     pub fn deep_clone(&self) -> Self
     where
         T: Clone,
-        Box<dyn Reactive + Send + Sync>: Clone,
+        ReactiveRef: Sized,
     {
         let inner = S::new(self.inner.borrow().clone());
         let generator = self.generator.clone();
-        let receivers = S::Ptr::<Vec<ReactiveRef>>::new(self.receivers.borrow().clone());
+        let receivers = S::Ptr::<Vec<ReactiveRef>>::new(
+            self.receivers
+                .borrow()
+                .iter()
+                .map(|receiver| receiver.clone_box())
+                .collect(),
+        );
         let suspended = S::Ptr::<bool>::new(self.suspended.borrow().clone());
         Self {
             inner,
@@ -277,12 +285,26 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
     }
 }
 
-impl<T, S: Shared<T>> Reactive for SignalBase<T, S> {
+impl<T, S> Reactive for SignalBase<T, S>
+where
+    S: Shared<T> + Send + Sync + Clone + 'static,
+    S::Ptr<Vec<ReactiveRef>>: Send + Sync,
+    S::Ptr<bool>: Send + Sync,
+    S::Rc<Box<GeneratorFn<T, S>>>: Send + Sync,
+    T: Send + Sync + 'static,
+{
     fn react(&self) {
         if let Some(generator) = self.generator.as_ref() {
             let value = (generator.as_ref())(self);
             self.send(value);
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>
+    where
+        Self: 'static,
+    {
+        Box::new(self.clone())
     }
 }
 

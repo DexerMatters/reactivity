@@ -12,6 +12,5 @@ keywords      = ["signal", "async", "reactive", "responsive"]
 categories    = ["asynchronous"]
 
 [dependencies]
-clone_dyn     = "0.32.0"
 parking_lot   = "0.12.3"
 paste         = "1.0.15"

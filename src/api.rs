@@ -128,7 +128,7 @@ pub(crate) trait Dirty {
 #[allow(private_bounds)]
 pub trait Reactive: Dirty {
     /// Update the signal and trigger its reaction.
-    fn react(&self);
+    fn react(&self) -> Vec<UpdatePromise>;
 
     /// Clone this object as a trait object
     fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>
@@ -346,11 +346,10 @@ where
     S::Rc<Box<GeneratorFn<T, S>>>: Send + Sync,
     T: Send + Sync + 'static,
 {
-    fn react(&self) {
-        if let Some(generator) = self.generator.as_ref() {
-            let value = (generator.as_ref())(self);
-            self.send(value);
-        }
+    fn react(&self) -> Vec<UpdatePromise> {
+        let generator = self.generator.as_ref().unwrap();
+        let value = (generator.as_ref())(self);
+        self.send(value)
     }
 
     fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>

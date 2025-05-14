@@ -57,6 +57,8 @@ pub trait Shared<T>: Clone {
     /// Borrows the inner value as a mutable reference.
     fn borrow_mut(&self) -> Self::RefMut<'_, T>;
 
+    fn get_ref(&self) -> &T;
+
     /// Replaces the inner value with a new value and returns the old value.
     fn replace(&self, value: T) -> Self {
         self.replace_with(|_| value)
@@ -93,6 +95,10 @@ impl<T> Shared<T> for Rc<RefCell<T>> {
     fn borrow_mut(&self) -> Self::RefMut<'_, T> {
         RefCell::borrow_mut(self)
     }
+
+    fn get_ref(&self) -> &T {
+        unsafe { self.as_ptr().as_ref().unwrap() }
+    }
 }
 
 impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
@@ -112,6 +118,10 @@ impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
 
     fn borrow_mut(&self) -> Self::RefMut<'_, T> {
         self.write()
+    }
+
+    fn get_ref(&self) -> &T {
+        unsafe { self.data_ptr().as_ref().unwrap() }
     }
 }
 
@@ -135,12 +145,21 @@ pub trait Reactive: Dirty {
     where
         Self: 'static;
 
-    fn promise(&self) -> UpdatePromise
+    fn get_receivers(&self) -> &Vec<ReactiveRef>;
+
+    fn promise(&self) -> Vec<UpdatePromise>
     where
         Self: 'static,
     {
         self.increase_dirty();
-        UpdatePromise::new(self.clone_box())
+        let self_ = UpdatePromise::new(self.clone_box());
+        let mut receivers: Vec<_> = self
+            .get_receivers()
+            .iter()
+            .flat_map(|receiver| receiver.promise())
+            .collect();
+        receivers.insert(0, self_);
+        receivers
     }
 }
 
@@ -289,7 +308,7 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
         self.receivers
             .borrow()
             .iter()
-            .map(|receiver| receiver.promise())
+            .flat_map(|receiver| receiver.promise())
             .collect()
     }
 
@@ -357,6 +376,10 @@ where
         Self: 'static,
     {
         Box::new(self.clone())
+    }
+
+    fn get_receivers(&self) -> &Vec<ReactiveRef> {
+        self.receivers.get_ref()
     }
 }
 

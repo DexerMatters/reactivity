@@ -57,8 +57,6 @@ pub trait Shared<T>: Clone {
     /// Borrows the inner value as a mutable reference.
     fn borrow_mut(&self) -> Self::RefMut<'_, T>;
 
-    fn get_ref(&self) -> &T;
-
     /// Replaces the inner value with a new value and returns the old value.
     fn replace(&self, value: T) -> Self {
         self.replace_with(|_| value)
@@ -95,10 +93,6 @@ impl<T> Shared<T> for Rc<RefCell<T>> {
     fn borrow_mut(&self) -> Self::RefMut<'_, T> {
         RefCell::borrow_mut(self)
     }
-
-    fn get_ref(&self) -> &T {
-        unsafe { self.as_ptr().as_ref().unwrap() }
-    }
 }
 
 impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
@@ -119,16 +113,13 @@ impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
     fn borrow_mut(&self) -> Self::RefMut<'_, T> {
         self.write()
     }
-
-    fn get_ref(&self) -> &T {
-        unsafe { self.data_ptr().as_ref().unwrap() }
-    }
 }
 
 pub(crate) trait Dirty {
     fn dirty(&self) -> usize;
     fn increase_dirty(&self);
     fn decrease_dirty(&self);
+    fn receiver_promise(&self) -> Vec<UpdatePromise>;
 }
 
 /// Core trait for reactive components.
@@ -145,19 +136,13 @@ pub trait Reactive: Dirty {
     where
         Self: 'static;
 
-    fn get_receivers(&self) -> &Vec<ReactiveRef>;
-
     fn promise(&self) -> Vec<UpdatePromise>
     where
         Self: 'static,
     {
         self.increase_dirty();
         let self_ = UpdatePromise::new(self.clone_box());
-        let mut receivers: Vec<_> = self
-            .get_receivers()
-            .iter()
-            .flat_map(|receiver| receiver.promise())
-            .collect();
+        let mut receivers: Vec<_> = self.receiver_promise();
         receivers.insert(0, self_);
         receivers
     }
@@ -377,10 +362,6 @@ where
     {
         Box::new(self.clone())
     }
-
-    fn get_receivers(&self) -> &Vec<ReactiveRef> {
-        self.receivers.get_ref()
-    }
 }
 
 impl<T, S: Shared<T>> Clone for SignalBase<T, S> {
@@ -410,6 +391,14 @@ where
 
     fn decrease_dirty(&self) {
         self.dirty.replace(self.dirty() - 1);
+    }
+
+    fn receiver_promise(&self) -> Vec<UpdatePromise> {
+        self.receivers
+            .borrow()
+            .iter()
+            .flat_map(|receiver| receiver.promise())
+            .collect()
     }
 }
 

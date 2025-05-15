@@ -1,18 +1,5 @@
-use std::sync::Arc;
-
-use api::SignalBase;
-
 pub mod api;
-
-/// A reactive signal that can be observed and updated.
-/// It is thread-safe and can be used in concurrent environments.
-///
-/// It can:
-/// - Hold a value that can be read with `get()` or `borrow()`
-/// - Be updated with new values via `send()`
-/// - Depend on other signals and react to their changes
-/// - Have other signals depend on it
-pub type Signal<T> = SignalBase<T, Arc<parking_lot::RwLock<T>>>;
+pub mod sync;
 
 #[macro_export]
 macro_rules! __signal_aux {
@@ -70,6 +57,54 @@ macro_rules! __signal_aux {
 /// Always use the `signal!` macro to create signals instead of using `Signal::new`
 /// or `Signal::driven` directly. The macro automatically sets up the dependency chain
 /// by calling `add_receiver` for each dependency.
+#[macro_export]
+macro_rules! sync_signal {
+    ($(< $_before:ident $(, $_after:ident)? >)? [$($params:ident),*] $proc:expr) => {
+        sync_signal!($(<$_before:ident $(, $_after:ident)?>)? [$($params),*] $proc; ())
+    };
+    ($(< $_before:ident $(, $_after:ident)? >)? [$($params:ident),*] $proc:expr; $eff:expr) => {
+        {
+            $(
+                let $params = $params.clone();
+                paste::paste!{ let [<$params _>] = $params.clone(); }
+                paste::paste!{ let [<$params __>] = $params.clone(); }
+            )*
+            let processor = move || {
+                $(
+                    let $params = $params.get();
+                )*
+                $proc
+            };
+            let signal = SyncSignal::driven(processor, move |_self, _after| {
+                $(
+                    let $_before = _self.get();
+                    $(
+                        let $_after = _after.clone();
+                    )?
+                )?
+                $(
+                    paste::paste!{
+                        #[allow(unused_variables)]
+                        let $params = [<$params _>].clone();
+                    }
+                )*
+                $eff
+            });
+
+            $(
+                paste::paste!{
+                    [<$params __>].add_receiver(&signal);
+                }
+            )*
+
+            signal
+        }
+    };
+
+    ($value:expr) => {
+        SyncSignal::new($value)
+    };
+}
 
 #[macro_export]
 macro_rules! signal {
@@ -122,19 +157,27 @@ macro_rules! signal {
 
 #[cfg(test)]
 mod tests {
-    use crate::Signal;
+    use std::thread::{self, sleep};
+
+    use crate::sync::SyncSignal;
 
     #[test]
     fn test() {
         // Diamond dependency
-        let x = signal!(1);
-        let doubled_x = signal!([x] x * 2);
-        let tripled_x = signal!([x] x * 3);
-        let _ = signal!(
+        let x = sync_signal!(1);
+        let doubled_x = sync_signal!([x] x * 2);
+        let tripled_x = sync_signal!([x] x * 3);
+        let _ = sync_signal!(
             <before, now> 
             [doubled_x, tripled_x] 
             doubled_x + tripled_x; 
             println!("output {before} -> {now}"));
-        x.send(2);
+
+        thread::spawn(move || loop {
+            sleep(std::time::Duration::from_secs(1));
+            x.send(x.get() + 1);
+        })
+        .join()
+        .unwrap();
     }
 }

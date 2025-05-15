@@ -1,8 +1,6 @@
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    ops::Deref,
-    rc::Rc,
-};
+use std::{ops::Deref, sync::Arc};
+
+use parking_lot::{Mutex, MutexGuard};
 
 pub(crate) trait Dirty {
     fn dirty(&self) -> usize;
@@ -21,7 +19,7 @@ pub trait Reactive: Dirty {
     fn react(&self) -> Vec<UpdatePromise>;
 
     /// Clone this object as a trait object
-    fn clone_box(&self) -> Box<dyn Reactive>
+    fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>
     where
         Self: 'static;
 
@@ -47,7 +45,7 @@ impl UpdatePromise {
         Self { signal }
     }
 
-    pub fn from_signal<T: 'static>(signal: &Signal<T>) -> Self {
+    pub fn from_signal<T: Send + 'static>(signal: &SyncSignal<T>) -> Self {
         Self {
             signal: signal.clone_box(),
         }
@@ -69,36 +67,36 @@ impl Drop for UpdatePromise {
 }
 
 /// A type alias for a reference to a `Reactive` object.
-type ReactiveRef = Box<dyn Reactive>;
+type ReactiveRef = Box<dyn Reactive + Send + Sync>;
 
 /// A type alias for a function that generates a value of type `T`.
-type GeneratorFn<T> = dyn Fn(&Signal<T>) -> T;
+type GeneratorFn<T> = dyn Fn(&SyncSignal<T>) -> T + Send + Sync;
 
 /// A reactive signal that can be observed and updated.
 ///
-/// Signal is the foundation for reactive programming in this library.
+/// SyncSignal is the foundation for reactive programming in this library.
 /// It can:
 /// - Hold a value that can be read with `get()` or `borrow()`
 /// - Be updated with new values via `send()`
 /// - Depend on other signals and react to their changes
 /// - Have other signals depend on it
-pub struct Signal<T> {
-    inner: Rc<RefCell<T>>,
-    generator: Option<Rc<Box<GeneratorFn<T>>>>,
-    receivers: Rc<RefCell<Vec<ReactiveRef>>>,
-    suspended: Rc<RefCell<bool>>,
-    dirty: Rc<RefCell<usize>>,
+pub struct SyncSignal<T> {
+    inner: Arc<Mutex<T>>,
+    generator: Option<Arc<Box<GeneratorFn<T>>>>,
+    receivers: Arc<Mutex<Vec<ReactiveRef>>>,
+    suspended: Arc<Mutex<bool>>,
+    dirty: Arc<Mutex<usize>>,
 }
 
-impl<T> Signal<T> {
+impl<T> SyncSignal<T> {
     /// Creates a new independent signal with an initial value.
     pub fn new(value: T) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(value)),
+            inner: Arc::new(Mutex::new(value)),
             generator: None,
-            receivers: Rc::new(RefCell::new(Vec::new())),
-            suspended: Rc::new(RefCell::new(false)),
-            dirty: Rc::new(RefCell::new(0)),
+            receivers: Arc::new(Mutex::new(Vec::new())),
+            suspended: Arc::new(Mutex::new(false)),
+            dirty: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -114,25 +112,25 @@ impl<T> Signal<T> {
     ///
     /// ```rust
     /// // Create a signal that reacts to changes in another signal
-    /// let count = Signal::new(0);
-    /// let doubled = Signal::driven(
+    /// let count = SyncSignal::new(0);
+    /// let doubled = SyncSignal::driven(
     ///     || count.get() * 2,
     ///     |_, new_value| println!("Doubled value is now: {}", new_value)
     /// );
     /// count.add_receiver(&doubled); // Register the dependency
     /// ```
     pub fn driven(
-        processor: impl Fn() -> T + 'static,
-        effect: impl Fn(&Signal<T>, &T) -> () + 'static,
+        processor: impl Fn() -> T + Send + Sync + 'static,
+        effect: impl Fn(&SyncSignal<T>, &T) -> () + Send + Sync + 'static,
     ) -> Self {
         let mut signal = Self {
-            inner: Rc::new(RefCell::new(processor())),
+            inner: Arc::new(Mutex::new(processor())),
             generator: None,
-            receivers: Rc::new(RefCell::new(Vec::new())),
-            suspended: Rc::new(RefCell::new(false)),
-            dirty: Rc::new(RefCell::new(0)),
+            receivers: Arc::new(Mutex::new(Vec::new())),
+            suspended: Arc::new(Mutex::new(false)),
+            dirty: Arc::new(Mutex::new(0)),
         };
-        signal.generator = Some(Rc::new(Box::new(move |s| {
+        signal.generator = Some(Arc::new(Box::new(move |s| {
             let x = processor();
             effect(&s, &x);
             x
@@ -145,30 +143,26 @@ impl<T> Signal<T> {
     where
         T: Clone,
     {
-        self.inner.borrow().clone()
+        self.inner.lock().clone()
     }
 
     /// Gets the current value of the signal by reference.
     ///
     /// This method will not trigger any reactions or computations.
-    pub fn borrow(&self) -> Ref<'_, T> {
-        self.inner.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, T> {
-        self.inner.borrow_mut()
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.inner.lock()
     }
 
     /// Updates the signal value and notifies all dependent signals.
     ///
     /// This triggers the `react()` method on all receivers (dependent signals).
     pub fn send(&self, value: T) -> Vec<UpdatePromise> {
-        *self.inner.borrow_mut() = value;
-        if *self.suspended.borrow() {
+        *self.inner.lock() = value;
+        if *self.suspended.lock() {
             return Vec::new();
         }
         self.receivers
-            .borrow()
+            .lock()
             .iter()
             .flat_map(|receiver| receiver.promise())
             .collect()
@@ -179,21 +173,19 @@ impl<T> Signal<T> {
     where
         U: Into<ReactiveRef>,
     {
-        self.receivers
-            .borrow_mut()
-            .push(((*dependent).clone()).into());
+        self.receivers.lock().push(((*dependent).clone()).into());
     }
 
     /// Temporarily prevents this signal from notifying its dependents when changed.
     ///
     /// This is useful to avoid unnecessary reactions during batch updates.
     pub fn suspend(&self) {
-        *self.suspended.borrow_mut() = true;
+        *self.suspended.lock() = true;
     }
 
     /// Re-enables notifications to dependent signals after suspension.
     pub fn resume(&self) {
-        *self.suspended.borrow_mut() = false;
+        *self.suspended.lock() = false;
     }
 
     /// Creates a new independent signal with the same value and receivers.
@@ -202,29 +194,29 @@ impl<T> Signal<T> {
         T: Clone,
     {
         Self {
-            inner: Rc::new(RefCell::new(self.inner.borrow().clone())),
+            inner: Arc::new(Mutex::new(self.inner.lock().clone())),
             generator: self.generator.clone(),
-            receivers: Rc::new(RefCell::new(
+            receivers: Arc::new(Mutex::new(
                 self.receivers
-                    .borrow()
+                    .lock()
                     .iter()
                     .map(|receiver| receiver.clone_box())
                     .collect(),
             )),
-            suspended: Rc::new(RefCell::new(*self.suspended.borrow())),
-            dirty: Rc::new(RefCell::new(*self.dirty.borrow())),
+            suspended: Arc::new(Mutex::new(*self.suspended.lock())),
+            dirty: Arc::new(Mutex::new(*self.dirty.lock())),
         }
     }
 }
 
-impl<T> Reactive for Signal<T> {
+impl<T: Send> Reactive for SyncSignal<T> {
     fn react(&self) -> Vec<UpdatePromise> {
         let generator = self.generator.as_ref().unwrap();
         let value = (generator.as_ref())(self);
         self.send(value)
     }
 
-    fn clone_box(&self) -> Box<dyn Reactive>
+    fn clone_box(&self) -> Box<dyn Reactive + Send + Sync>
     where
         Self: 'static,
     {
@@ -232,7 +224,7 @@ impl<T> Reactive for Signal<T> {
     }
 }
 
-impl<T> Clone for Signal<T> {
+impl<T> Clone for SyncSignal<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -244,29 +236,29 @@ impl<T> Clone for Signal<T> {
     }
 }
 
-impl<T> Dirty for Signal<T> {
+impl<T> Dirty for SyncSignal<T> {
     fn dirty(&self) -> usize {
-        *self.dirty.borrow()
+        *self.dirty.lock()
     }
 
     fn increase_dirty(&self) {
-        *self.dirty.borrow_mut() += 1;
+        *self.dirty.lock() += 1;
     }
 
     fn decrease_dirty(&self) {
-        *self.dirty.borrow_mut() -= 1;
+        *self.dirty.lock() -= 1;
     }
 
     fn receiver_promise(&self) -> Vec<UpdatePromise> {
         self.receivers
-            .borrow()
+            .lock()
             .iter()
             .flat_map(|receiver| receiver.promise())
             .collect()
     }
 }
 
-impl<T: Reactive + 'static> From<T> for Box<dyn Reactive> {
+impl<T: Reactive + Send + Sync + 'static> From<T> for Box<dyn Reactive + Send + Sync> {
     fn from(value: T) -> Self {
         Box::new(value)
     }

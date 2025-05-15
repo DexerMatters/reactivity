@@ -7,30 +7,11 @@ pub mod api;
 /// A reactive signal that can be observed and updated.
 /// It is thread-safe and can be used in concurrent environments.
 ///
-/// `Signal<T>` is a type alias for `SignalBase<T, Arc<parking_lot::RwLock<T>>>`,
-/// which provides a thread-safe implementation of the reactive signal.
-///
 /// It can:
 /// - Hold a value that can be read with `get()` or `borrow()`
 /// - Be updated with new values via `send()`
 /// - Depend on other signals and react to their changes
 /// - Have other signals depend on it
-///
-/// # Examples
-///
-/// ```rust
-/// use reactivity::Signal;
-///
-/// // Create a new signal
-/// let count = Signal::new(0);
-///
-/// // Read the value
-/// assert_eq!(count.get(), 0);
-///
-/// // Update the value
-/// count.send(42);
-/// assert_eq!(count.get(), 42);
-/// ```
 pub type Signal<T> = SignalBase<T, Arc<parking_lot::RwLock<T>>>;
 
 #[macro_export]
@@ -61,7 +42,6 @@ macro_rules! __signal_aux {
 /// # Examples
 ///
 /// ```rust
-/// # use reactivity::{signal, Signal};
 /// let x = signal!(1);
 /// let y = signal!(<_y, y> [x] x + 2; println!("y {_y} -> {y}"));
 /// let z = signal!(<_z, z> [y] y * y; println!("z {_z} -> {z}"));
@@ -90,24 +70,6 @@ macro_rules! __signal_aux {
 /// Always use the `signal!` macro to create signals instead of using `Signal::new`
 /// or `Signal::driven` directly. The macro automatically sets up the dependency chain
 /// by calling `add_receiver` for each dependency.
-///
-/// # Dependency Tracking
-///
-/// The macro automatically tracks dependencies between signals:
-///
-/// ```rust
-/// # use reactivity::{signal, Signal};
-/// let a = signal!(1);
-/// let b = signal!(2);
-/// let sum = signal!([a, b] a + b);
-///
-/// // When a or b changes, sum will automatically update
-/// a.send(10);
-/// assert_eq!(sum.get(), 12);
-///
-/// b.send(20);
-/// assert_eq!(sum.get(), 30);
-/// ```
 
 #[macro_export]
 macro_rules! signal {

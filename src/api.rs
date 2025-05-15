@@ -6,19 +6,27 @@ use std::{
 };
 
 /// A trait for creating a new instance of a type with a given value.
-pub trait Constructor<T> {
+pub trait Constructor<T: ?Sized> {
     /// Creates a new instance of the type with the given value.
-    fn init(value: T) -> Self;
+    fn init(value: T) -> Self
+    where
+        T: Sized;
 }
 
-impl<T> Constructor<T> for Rc<T> {
-    fn init(value: T) -> Self {
+impl<T: ?Sized> Constructor<T> for Rc<T> {
+    fn init(value: T) -> Self
+    where
+        T: Sized,
+    {
         Rc::new(value)
     }
 }
 
-impl<T> Constructor<T> for Arc<T> {
-    fn init(value: T) -> Self {
+impl<T: ?Sized> Constructor<T> for Arc<T> {
+    fn init(value: T) -> Self
+    where
+        T: Sized,
+    {
         Arc::new(value)
     }
 }
@@ -34,7 +42,7 @@ pub trait Shared<T>: Clone {
     type Ptr<U>: Shared<U>;
 
     /// The type of the sharable reference countable pointer.
-    type Rc<U>: Constructor<U> + Deref + AsRef<U> + Clone;
+    type Rc<U: ?Sized>: Constructor<U> + Deref + AsRef<U> + Clone;
 
     /// The type of the reference to the inner value.
     type Ref<'a, U>: Deref<Target = U>
@@ -78,7 +86,7 @@ pub trait Shared<T>: Clone {
 impl<T> Shared<T> for Rc<RefCell<T>> {
     type Inner = T;
     type Ptr<U> = Rc<RefCell<U>>;
-    type Rc<U> = Rc<U>;
+    type Rc<U: ?Sized> = Rc<U>;
     type Ref<'a, U> = Ref<'a, U> where Self: 'a, U: 'a;
     type RefMut<'a, U> = RefMut<'a, U> where Self: 'a, U: 'a;
 
@@ -98,7 +106,7 @@ impl<T> Shared<T> for Rc<RefCell<T>> {
 impl<T> Shared<T> for Arc<parking_lot::RwLock<T>> {
     type Inner = T;
     type Ptr<U> = Arc<parking_lot::RwLock<U>>;
-    type Rc<U> = Arc<U>;
+    type Rc<U: ?Sized> = Arc<U>;
     type Ref<'a, U> = parking_lot::RwLockReadGuard<'a, U> where Self: 'a, U: 'a;
     type RefMut<'a, U> = parking_lot::RwLockWriteGuard<'a, U> where Self: 'a, U: 'a;
 
@@ -175,6 +183,9 @@ impl UpdatePromise {
         S::Ptr<bool>: Send + Sync,
         S::Ptr<usize>: Send + Sync,
         S::Rc<Box<GeneratorFn<T, S>>>: Send + Sync,
+
+        S::Rc<(dyn for<'a> Fn(&'a SignalBase<T, S>) -> T + Send + Sync + 'static)>:
+            Send + Sync + 'static,
     {
         Self {
             signal: signal.clone_box(),
@@ -216,7 +227,7 @@ type GeneratorFn<T, S> = dyn Fn(&SignalBase<T, S>) -> T + Send + Sync;
 /// - Have other signals depend on it
 pub struct SignalBase<T, S: Shared<T>> {
     inner: S,
-    generator: Option<S::Rc<Box<GeneratorFn<T, S>>>>,
+    generator: Option<S::Rc<GeneratorFn<T, S>>>,
     receivers: S::Ptr<Vec<ReactiveRef>>,
     dirty: S::Ptr<usize>,
 }
@@ -230,43 +241,6 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
             receivers: S::Ptr::<Vec<ReactiveRef>>::new(Vec::new()),
             dirty: S::Ptr::<usize>::new(0),
         }
-    }
-
-    /// Creates a signal that depends on other signals.
-    ///
-    /// # Parameters
-    ///
-    /// - `processor`: Function that computes the signal's value from its dependencies
-    /// - `effect`: Side effect function called when the signal changes, receives both
-    ///   the signal reference and the newly computed value
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// // Create a signal that reacts to changes in another signal
-    /// let count = SignalBase::new(0);
-    /// let doubled = SignalBase::driven(
-    ///     || count.get() * 2,
-    ///     |_, new_value| println!("Doubled value is now: {}", new_value)
-    /// );
-    /// count.add_receiver(&doubled); // Register the dependency
-    /// ```
-    pub fn driven(
-        processor: impl Fn() -> T + Send + Sync + 'static,
-        effect: impl Fn(&SignalBase<T, S>, &T) -> () + Send + Sync + 'static,
-    ) -> Self {
-        let mut signal = Self {
-            inner: S::new(processor()),
-            generator: None,
-            receivers: S::Ptr::<Vec<ReactiveRef>>::new(Vec::new()),
-            dirty: S::Ptr::<usize>::new(0),
-        };
-        signal.generator = Some(S::Rc::init(Box::new(move |s| {
-            let x = processor();
-            effect(&s, &x);
-            x
-        })));
-        signal
     }
 
     /// Gets the current value of the signal (cloned).
@@ -334,6 +308,48 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
     }
 }
 
+impl<T> SignalBase<T, Arc<parking_lot::RwLock<T>>> {
+    /// Creates a new signal that is driven by the given generator function.
+
+    /// Creates a signal that depends on other signals.
+    ///
+    /// # Parameters
+    ///
+    /// - `processor`: Function that computes the signal's value from its dependencies
+    /// - `effect`: Side effect function called when the signal changes, receives both
+    ///   the signal reference and the newly computed value
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// // Create a signal that reacts to changes in another signal
+    /// let count = SignalBase::new(0);
+    /// let doubled = SignalBase::driven(
+    ///     || count.get() * 2,
+    ///     |_, new_value| println!("Doubled value is now: {}", new_value)
+    /// );
+    /// count.add_receiver(&doubled); // Register the dependency
+    /// ```
+    pub fn driven(
+        processor: impl Fn() -> T + Send + Sync + 'static,
+        effect: impl Fn(&SignalBase<T, Arc<parking_lot::RwLock<T>>>, &T) -> () + Send + Sync + 'static,
+    ) -> Self {
+        let mut signal = Self {
+            inner: Arc::new(processor().into()),
+            generator: None,
+            receivers: Arc::new(Vec::new().into()),
+            dirty: Arc::new(0.into()),
+        };
+
+        signal.generator = Some(Arc::new(move |s| {
+            let x = processor();
+            effect(&s, &x);
+            x
+        }));
+        signal
+    }
+}
+
 impl<T, S> Reactive for SignalBase<T, S>
 where
     S: Shared<T> + Send + Sync + Clone + 'static,
@@ -342,6 +358,9 @@ where
     S::Ptr<usize>: Send + Sync,
     S::Rc<Box<GeneratorFn<T, S>>>: Send + Sync,
     T: Send + Sync + 'static,
+
+    S::Rc<(dyn for<'a> Fn(&'a SignalBase<T, S>) -> T + Send + Sync + 'static)>:
+        Send + Sync + 'static,
 {
     fn react(&self) -> Vec<UpdatePromise> {
         let generator = self.generator.as_ref().unwrap();

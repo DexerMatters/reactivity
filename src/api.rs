@@ -148,6 +148,11 @@ pub trait Reactive: Dirty {
     }
 }
 
+/// A promise that resolves when an update to a reactive signal is completed.
+///
+/// When a signal is updated, it creates an `UpdatePromise` for itself and all its
+/// dependents. These promises ensure that all signals are updated in the correct order.
+/// When the promise is dropped, it automatically resolves by calling the `resolve` method.
 pub struct UpdatePromise {
     signal: ReactiveRef,
 }
@@ -158,6 +163,10 @@ impl UpdatePromise {
         Self { signal }
     }
 
+    /// Creates an `UpdatePromise` from a signal.
+    ///
+    /// This is a convenience method for creating an update promise from a specific
+    /// signal type without having to use `clone_box` directly.
     pub fn from_signal<T, S>(signal: &SignalBase<T, S>) -> Self
     where
         T: Send + Sync + 'static,
@@ -173,6 +182,10 @@ impl UpdatePromise {
     }
 
     /// Resolves the promise by calling the `react()` method on the signal.
+    ///
+    /// This decreases the dirty counter of the signal and triggers a reaction
+    /// if the counter reaches zero, ensuring all dependencies are resolved before
+    /// this signal is updated.
     pub fn resolve(&self) {
         self.signal.decrease_dirty();
         if self.signal.dirty() == 0 {
@@ -205,8 +218,6 @@ pub struct SignalBase<T, S: Shared<T>> {
     inner: S,
     generator: Option<S::Rc<Box<GeneratorFn<T, S>>>>,
     receivers: S::Ptr<Vec<ReactiveRef>>,
-
-    suspended: S::Ptr<bool>,
     dirty: S::Ptr<usize>,
 }
 
@@ -217,7 +228,6 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
             inner: S::new(value),
             generator: None,
             receivers: S::Ptr::<Vec<ReactiveRef>>::new(Vec::new()),
-            suspended: S::Ptr::<bool>::new(false),
             dirty: S::Ptr::<usize>::new(0),
         }
     }
@@ -249,7 +259,6 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
             inner: S::new(processor()),
             generator: None,
             receivers: S::Ptr::<Vec<ReactiveRef>>::new(Vec::new()),
-            suspended: S::Ptr::<bool>::new(false),
             dirty: S::Ptr::<usize>::new(0),
         };
         signal.generator = Some(S::Rc::init(Box::new(move |s| {
@@ -287,9 +296,6 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
     /// This triggers the `react()` method on all receivers (dependent signals).
     pub fn send(&self, value: T) -> Vec<UpdatePromise> {
         self.inner.replace(value);
-        if self.suspended.borrow().clone() {
-            return Vec::new();
-        }
         self.receivers
             .borrow()
             .iter()
@@ -305,18 +311,6 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
         self.receivers
             .borrow_mut()
             .push(((*dependent).clone()).into());
-    }
-
-    /// Temporarily prevents this signal from notifying its dependents when changed.
-    ///
-    /// This is useful to avoid unnecessary reactions during batch updates.
-    pub fn suspend(&self) {
-        self.suspended.replace(true);
-    }
-
-    /// Re-enables notifications to dependent signals after suspension.
-    pub fn resume(&self) {
-        self.suspended.replace(false);
     }
 
     /// Creates a new independent signal with the same value and receivers.
@@ -335,7 +329,6 @@ impl<T, S: Shared<T>> SignalBase<T, S> {
                     .map(|receiver| receiver.clone_box())
                     .collect(),
             ),
-            suspended: S::Ptr::<bool>::new(self.suspended.borrow().clone()),
             dirty: S::Ptr::<usize>::new(*self.dirty.borrow()),
         }
     }
@@ -370,7 +363,6 @@ impl<T, S: Shared<T>> Clone for SignalBase<T, S> {
             inner: self.inner.clone(),
             generator: self.generator.clone(),
             receivers: self.receivers.clone(),
-            suspended: self.suspended.clone(),
             dirty: self.dirty.clone(),
         }
     }

@@ -30,7 +30,7 @@ reactivity = "0.1.0"
 ## Basic Usage
 
 ```rust
-use reactivity::signalP>;
+use reactivity::signal;
 
 fn main() {
     // Create a basic signal
@@ -93,32 +93,6 @@ let z = signal!(<old_val, new_val> [x, y] {
     let sum = x + y;
     sum * 2
 }; println!("z changed from {} to {}", old_val, new_val));
-```
-
-### Suspending Reactions
-
-You can temporarily suspend reactions to disable reaction propagation.
-
-```rust
-let count = signal!(0);
-let doubled = signal!([count] count * 2);
-
-// Suspend reactions
-count.suspend();
-
-// Make changes without triggering reactions
-count.send(5);
-count.send(10);
-
-assert_eq!(doubled.get(), 0); // No reaction
-
-// Lift suspension
-count.resume();
-
-// Now reactions will be triggered
-count.send(20);
-
-assert_eq!(doubled.get(), 40); // Reaction triggered
 ```
 
 ## Advanced Usage

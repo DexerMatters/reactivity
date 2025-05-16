@@ -12,7 +12,9 @@ Reactivity is a Rust library that provides a flexible reactive programming syste
 
 ## Features
 
-- Thread-safe reactive signals
+- Two signal implementations:
+  - `reactivity::Signal` for single-threaded contexts
+  - `reactivity::sync::Signal` for thread-safe, multi-threaded contexts
 - Clean API for creating and managing signals
 - Convenient macro for defining reactive computations
 - Support for side effects when signals change
@@ -29,8 +31,11 @@ reactivity = "0.1.0"
 
 ## Basic Usage
 
+### Single-Threaded Signals
+
 ```rust
-use reactivity::signalP>;
+use reactivity::Signal;
+use reactivity::signal;
 
 fn main() {
     // Create a basic signal
@@ -55,31 +60,66 @@ fn main() {
 }
 ```
 
-## API Overview
-
-### Signal
-
-`Signal<T>` is the main type for reactive values. It can:
-
-- Hold a value that can be read with `get()` or `borrow()`
-- Be updated with new values via `send()`
-- Depend on other signals and react to their changes
-- Have other signals depend on it
+### Thread-Safe Signals
 
 ```rust
-// Create an independent signal
+use std::thread;
+use reactivity::sync::Signal;
+use reactivity::signal;
+
+fn main() {
+    // Create a thread-safe signal
+    let count = signal!(0);
+    
+    // Create dependent signals
+    let doubled = signal!([count] count * 2);
+    
+    // Clone for use in another thread
+    let count_clone = count.clone();
+    
+    // Spawn a thread that updates the signal
+    let handle = thread::spawn(move || {
+        for i in 1..=5 {
+            count_clone.send(i);
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+    
+    // Wait for thread to complete
+    handle.join().unwrap();
+    
+    // Main thread can access the updated value
+    assert_eq!(doubled.get(), 10);
+}
+```
+
+## API Overview
+
+### Signal Types
+
+- `Signal<T>`: For single-threaded contexts (uses `Rc` and `RefCell` internally)
+- `sync::Signal<T>`: Thread-safe implementation (uses `Arc` and `RwLock` internally)
+
+```rust
+// Single-threaded signal
+use reactivity::Signal;
 let x = Signal::new(42);
 
-// Read the value
-let value = x.get();
+// Thread-safe signal
+use reactivity::sync::Signal;
+let y = Signal::new(42);
 
-// Update the value
-x.send(100);
+// Create dependent signals
+let a = Signal::new(1);
+let b = signal!([a] a * 2);
+
+// Register dependency (b will update when a changes)
+a.add_receiver(b);
 ```
 
 ### signal! Macro
 
-The `signal!` macro provides a convenient way to create signals:
+The `signal!` macro provides a convenient way to create signals. The macro automatically uses the appropriate Signal type based on the context:
 
 ```rust
 // Basic signal with initial value
@@ -93,32 +133,6 @@ let z = signal!(<old_val, new_val> [x, y] {
     let sum = x + y;
     sum * 2
 }; println!("z changed from {} to {}", old_val, new_val));
-```
-
-### Suspending Reactions
-
-You can temporarily suspend reactions to disable reaction propagation.
-
-```rust
-let count = signal!(0);
-let doubled = signal!([count] count * 2);
-
-// Suspend reactions
-count.suspend();
-
-// Make changes without triggering reactions
-count.send(5);
-count.send(10);
-
-assert_eq!(doubled.get(), 0); // No reaction
-
-// Lift suspension
-count.resume();
-
-// Now reactions will be triggered
-count.send(20);
-
-assert_eq!(doubled.get(), 40); // Reaction triggered
 ```
 
 ## Advanced Usage
@@ -135,9 +149,10 @@ let y = signal!(<old_y, new_y> [x] x * 3; {
 });
 ```
 
-### Thread-Safe Signals
+### Choosing Between Signal Types
 
-The default `Signal<T>` is thread-safe, using `Arc` and `parking_lot::RwLock` internally.
+- Use `reactivity::Signal` for single-threaded applications where all signals are accessed from the same thread
+- Use `reactivity::sync::Signal` when signals need to be shared across multiple threads
 
 ## License
 

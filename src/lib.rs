@@ -1,8 +1,134 @@
-use std::sync::Arc;
+use api::{Receptive, SealedSignalTrait};
 
-use api::SignalBase;
+use std::{cell::RefCell, rc::Rc};
 
 pub mod api;
+pub mod sync;
+
+/// A reactive signal that can be observed and updated.
+///
+/// `Signal` is the standard implementation for reactive programming
+/// in single-threaded contexts. It uses `Rc` and `RefCell` internally.
+/// For thread-safe signals, use `reactivity::sync::Signal` instead.
+///
+/// # Usage
+///
+/// ```rust
+/// use reactivity::Signal;
+/// use reactivity::signal;
+///
+/// // Create a basic signal
+/// let count = signal!(0);
+///
+/// // Create a derived signal
+/// let doubled = signal!([count] count * 2);
+///
+/// // Manually establish dependency (the signal! macro does this automatically)
+/// count.add_receiver(doubled);
+///
+/// // Update the original signal
+/// count.send(5);
+///
+/// // The change propagates automatically
+/// assert_eq!(doubled.get(), 10);
+/// ```
+///
+/// # When to use
+///
+/// Use `Signal` when all signals will be accessed from the same thread.
+/// If you need to share signals across multiple threads, use `sync::Signal` instead.
+#[derive(Clone)]
+pub struct Signal<T> {
+    /// The current value of the signal
+    inner: Rc<RefCell<T>>,
+    /// Optional effect function called when the signal is updated
+    effect: Option<Rc<dyn Fn(&Signal<T>, &T)>>,
+    /// Optional function that computes the signal's value
+    processor: Option<Rc<dyn Fn() -> T>>,
+    /// List of receivers that depend on this signal
+    receivers: Rc<RefCell<Vec<Box<dyn Receptive>>>>,
+    /// Counter tracking pending updates
+    dirty: Rc<RefCell<usize>>,
+}
+
+impl<T: 'static> Signal<T> {
+    /// Creates a signal that depends on other signals.
+    ///
+    /// # Parameters
+    ///
+    /// - `processor`: Function that computes the signal's value from its dependencies
+    /// - `effect`: Side effect function called when the signal changes, receives both
+    ///   the signal reference and the newly computed value
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// // Create a signal that reacts to changes in another signal
+    /// let count = Signal::new(0);
+    /// let doubled = Signal::driven(
+    ///     || count.get() * 2,
+    ///     |_, new_value| println!("Doubled value is now: {}", new_value)
+    /// );
+    /// count.add_receiver(Box::new(doubled));
+    /// ```
+    pub fn driven<F>(processor: F, effect: impl Fn(&Signal<T>, &T) + 'static) -> Self
+    where
+        F: Fn() -> T + 'static,
+    {
+        Self::init(
+            Rc::new(RefCell::new(processor())),
+            Some(Rc::new(effect)),
+            Some(Rc::new(processor)),
+            Rc::new(RefCell::new(Vec::new())),
+            Rc::new(RefCell::new(0)),
+        )
+    }
+}
+
+impl<T: 'static> SealedSignalTrait for Signal<T> {
+    type Inner = T;
+    type Rc<U: ?Sized> = Rc<U>;
+    type Ptr<U> = RefCell<U>;
+    type Effect = dyn Fn(&Signal<T>, &T);
+    type Processor = dyn Fn() -> T;
+    type Receiver = dyn Receptive;
+
+    fn init(
+        inner: Rc<RefCell<Self::Inner>>,
+        effect: Option<Rc<Self::Effect>>,
+        processor: Option<Rc<Self::Processor>>,
+        receivers: Rc<RefCell<Vec<Box<Self::Receiver>>>>,
+        dirty: Rc<RefCell<usize>>,
+    ) -> Self {
+        Self {
+            inner,
+            effect,
+            processor,
+            receivers,
+            dirty,
+        }
+    }
+
+    fn inner(&self) -> &Rc<RefCell<T>> {
+        &self.inner
+    }
+
+    fn effect(&self) -> Option<&Rc<Self::Effect>> {
+        self.effect.as_ref()
+    }
+
+    fn processor(&self) -> Option<&Rc<Self::Processor>> {
+        self.processor.as_ref()
+    }
+
+    fn receivers(&self) -> &Rc<RefCell<Vec<Box<Self::Receiver>>>> {
+        &self.receivers
+    }
+
+    fn dirty(&self) -> &Rc<RefCell<usize>> {
+        &self.dirty
+    }
+}
 
 /// A reactive signal that can be observed and updated.
 /// It is thread-safe and can be used in concurrent environments.
@@ -12,7 +138,6 @@ pub mod api;
 /// - Be updated with new values via `send()`
 /// - Depend on other signals and react to their changes
 /// - Have other signals depend on it
-pub type Signal<T> = SignalBase<T, Arc<parking_lot::RwLock<T>>>;
 
 #[macro_export]
 macro_rules! __signal_aux {
@@ -25,6 +150,9 @@ macro_rules! __signal_aux {
 }
 
 /// A macro to create reactive signals.
+///
+/// This macro supports creating both single-threaded signals (`reactivity::Signal`)
+/// and thread-safe signals (`reactivity::sync::Signal`) depending on the context.
 ///
 /// # Syntax
 ///
@@ -41,36 +169,40 @@ macro_rules! __signal_aux {
 ///
 /// # Examples
 ///
+/// ## Single-threaded usage
+///
 /// ```rust
+/// use reactivity::Signal;
 /// let x = signal!(1);
-/// let y = signal!(<_y, y> [x] x + 2; println!("y {_y} -> {y}"));
-/// let z = signal!(<_z, z> [y] y * y; println!("z {_z} -> {z}"));
+/// let y = signal!([x] x * 2);
 ///
-/// x.send(2);
-///
-/// assert_eq!(x.get(), 2);
-/// assert_eq!(y.get(), 4);
-/// assert_eq!(z.get(), 16);
-///
-/// // Output:
-/// // y 3 -> 4
-/// // z 9 -> 16
+/// x.send(5);
+/// assert_eq!(y.get(), 10);
 /// ```
 ///
-/// ## Parameters
+/// ## Thread-safe usage
 ///
-/// - `<before, after>`: Optional identifiers to capture the previous (`before`) and
-///   new (`after`) values when the signal changes
-/// - `[dep1, dep2, ...]`: Dependencies - signals this signal reacts to
-/// - `expression`: Expression that computes the new value
-/// - `effect_code`: Optional side effect code executed when the signal changes
+/// ```rust
+/// use std::thread;
+/// use reactivity::sync::Signal;
 ///
-/// # Best Practices
+/// let x = signal!(1);
+/// let y = signal!([x] x * 2);
+/// let x_clone = x.clone();
 ///
-/// Always use the `signal!` macro to create signals instead of using `Signal::new`
-/// or `Signal::driven` directly. The macro automatically sets up the dependency chain
-/// by calling `add_receiver` for each dependency.
-
+/// thread::spawn(move || {
+///     x_clone.send(5);
+/// }).join().unwrap();
+///
+/// assert_eq!(y.get(), 10);
+/// ```
+///
+/// # Choosing Between Signal Types
+///
+/// - Use `reactivity::Signal` (imported with `use reactivity::Signal`) for single-threaded contexts
+/// - Use `reactivity::sync::Signal` (imported with `use reactivity::sync::Signal`) for multi-threaded contexts
+///
+/// The `signal!` macro will use the correct Signal implementation based on your imports.
 #[macro_export]
 macro_rules! signal {
     ($(< $_before:ident $(, $_after:ident)? >)? [$($params:ident),*] $proc:expr) => {
@@ -78,6 +210,7 @@ macro_rules! signal {
     };
     ($(< $_before:ident $(, $_after:ident)? >)? [$($params:ident),*] $proc:expr; $eff:expr) => {
         {
+            use $crate::api::SignalTrait;
             $(
                 let $params = $params.clone();
                 paste::paste!{ let [<$params _>] = $params.clone(); }
@@ -107,7 +240,8 @@ macro_rules! signal {
 
             $(
                 paste::paste!{
-                    [<$params __>].add_receiver(&signal);
+                    let signal_ = signal.clone();
+                    [<$params __>].add_receiver(signal_);
                 }
             )*
 
@@ -116,13 +250,18 @@ macro_rules! signal {
     };
 
     ($value:expr) => {
-        Signal::new($value)
+        {
+            use $crate::api::SignalTrait;
+            Signal::new($value)
+        }
     };
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::Signal;
+    use std::thread;
+
+    use crate::{api::SignalTrait, sync::Signal};
 
     #[test]
     fn test() {
@@ -135,6 +274,11 @@ mod tests {
             [doubled_x, tripled_x] 
             doubled_x + tripled_x; 
             println!("output {before} -> {now}"));
-        x.send(2);
+        thread::spawn(move || loop {
+            x.send(x.get() + 1);
+            thread::sleep(std::time::Duration::from_millis(100));
+        })
+        .join()
+        .unwrap();
     }
 }

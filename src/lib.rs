@@ -130,25 +130,6 @@ impl<T: 'static> SealedSignalTrait for Signal<T> {
     }
 }
 
-/// A reactive signal that can be observed and updated.
-/// It is thread-safe and can be used in concurrent environments.
-///
-/// It can:
-/// - Hold a value that can be read with `get()` or `borrow()`
-/// - Be updated with new values via `send()`
-/// - Depend on other signals and react to their changes
-/// - Have other signals depend on it
-
-#[macro_export]
-macro_rules! __signal_aux {
-    ([self] $var:ident, $_self:ident) => {
-        let $var = $_self.get();
-    };
-    ($var:ident, $_self:ident) => {
-        let $var = $var.get();
-    };
-}
-
 /// A macro to create reactive signals.
 ///
 /// This macro supports creating both single-threaded signals (`reactivity::Signal`)
